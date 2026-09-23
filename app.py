@@ -1,43 +1,37 @@
 import streamlit as st
+import finnhub
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import requests
 
 st.set_page_config(page_title="Stock Dashboard", layout="wide")
 
-# -----------------------------
-# SIDEBAR
-# -----------------------------
+# Sidebar
 st.sidebar.title("Settings")
-
-alpha_key = st.sidebar.text_input("Alpha Vantage API Key", type="password")
+finnhub_key = st.sidebar.text_input("Finnhub API Key", type="password")
 ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
 
-if not alpha_key:
-    st.warning("Enter your Alpha Vantage API key.")
+if not finnhub_key:
+    st.warning("Enter your Finnhub API key.")
     st.stop()
 
-# -----------------------------
-# PRICE DATA
-# -----------------------------
-url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={ticker}&outputsize=full&apikey={alpha_key}"
-r = requests.get(url).json()
+client = finnhub.Client(api_key=finnhub_key)
 
-if "Time Series (Daily)" not in r:
-    st.error("Invalid ticker or API limit reached.")
-    st.stop()
+# Price data
+candles = client.stock_candles(ticker, "D", 1609459200, 9999999999)
 
-df = pd.DataFrame(r["Time Series (Daily)"]).T
-df.index = pd.to_datetime(df.index)
-df = df.sort_index()
+df = pd.DataFrame({
+    "Date": pd.to_datetime(candles["t"], unit="s"),
+    "Open": candles["o"],
+    "High": candles["h"],
+    "Low": candles["l"],
+    "Close": candles["c"],
+    "Volume": candles["v"]
+})
 
-df["Close"] = df["5. adjusted close"].astype(float)
-df["Volume"] = df["6. volume"].astype(float)
+df = df.set_index("Date")
 
-# -----------------------------
-# KPI CARDS
-# -----------------------------
+# KPIs
 st.title(f"{ticker} Dashboard")
 
 col1, col2, col3 = st.columns(3)
@@ -45,9 +39,7 @@ col1.metric("Price", f"${df['Close'][-1]:.2f}")
 col2.metric("Volume", f"{int(df['Volume'][-1])}")
 col3.metric("Data Points", len(df))
 
-# -----------------------------
-# INDICATORS
-# -----------------------------
+# Indicators
 df["MA20"] = df["Close"].rolling(20).mean()
 df["MA50"] = df["Close"].rolling(50).mean()
 df["MA200"] = df["Close"].rolling(200).mean()
@@ -57,9 +49,7 @@ df["BB_STD"] = df["Close"].rolling(20).std()
 df["BB_UPPER"] = df["BB_MID"] + 2 * df["BB_STD"]
 df["BB_LOWER"] = df["BB_MID"] - 2 * df["BB_STD"]
 
-# -----------------------------
-# PRICE CHART
-# -----------------------------
+# Price chart
 fig = go.Figure()
 fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close"))
 fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="MA20"))
@@ -70,9 +60,7 @@ fig.add_trace(go.Scatter(x=df.index, y=df["BB_LOWER"], name="Lower BB"))
 fig.update_layout(template="plotly_dark", height=500)
 st.plotly_chart(fig, use_container_width=True)
 
-# -----------------------------
 # MACD
-# -----------------------------
 df["EMA12"] = df["Close"].ewm(span=12).mean()
 df["EMA26"] = df["Close"].ewm(span=26).mean()
 df["MACD"] = df["EMA12"] - df["EMA26"]
@@ -84,9 +72,7 @@ fig_macd.add_trace(go.Scatter(x=df.index, y=df["Signal"], name="Signal"))
 fig_macd.update_layout(template="plotly_dark", height=300)
 st.plotly_chart(fig_macd, use_container_width=True)
 
-# -----------------------------
 # RSI
-# -----------------------------
 delta = df["Close"].diff()
 gain = delta.where(delta > 0, 0)
 loss = -delta.where(delta < 0, 0)
