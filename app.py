@@ -4,9 +4,6 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# -----------------------------
-# APP CONFIG
-# -----------------------------
 st.set_page_config(
     page_title="Stock Analysis Dashboard",
     layout="wide",
@@ -37,7 +34,7 @@ if not api_key:
 client = RESTClient(api_key)
 
 # -----------------------------
-# PRICE DATA FROM POLYGON
+# PRICE DATA
 # -----------------------------
 def get_price_data(ticker, start, end):
     bars = client.list_aggs(
@@ -91,7 +88,7 @@ data["BB_UPPER"] = data["BB_MID"] + (2 * data["BB_STD"])
 data["BB_LOWER"] = data["BB_MID"] - (2 * data["BB_STD"])
 
 # -----------------------------
-# INTERACTIVE PRICE CHART
+# PRICE CHART
 # -----------------------------
 fig = go.Figure()
 
@@ -106,14 +103,6 @@ if show_bb:
     fig.add_trace(go.Scatter(x=data.index, y=data["BB_UPPER"], name="Upper Band"))
     fig.add_trace(go.Scatter(x=data.index, y=data["BB_MID"], name="Middle Band"))
     fig.add_trace(go.Scatter(x=data.index, y=data["BB_LOWER"], name="Lower Band"))
-    fig.add_trace(go.Scatter(
-        x=data.index,
-        y=data["BB_UPPER"],
-        fill="tonexty",
-        fillcolor="rgba(200,200,200,0.2)",
-        line=dict(color="rgba(0,0,0,0)"),
-        showlegend=False
-    ))
 
 fig.update_layout(
     title=f"{ticker} Price Chart",
@@ -177,7 +166,7 @@ if show_rsi:
     st.plotly_chart(fig_rsi, use_container_width=True)
 
 # -----------------------------
-# FUNDAMENTALS + DCF
+# DCF
 # -----------------------------
 if show_dcf:
     fin = client.get_financials(ticker, limit=1)
