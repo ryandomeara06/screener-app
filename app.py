@@ -10,9 +10,6 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# -----------------------------
-# SIDEBAR
-# -----------------------------
 st.sidebar.title("⚙️ Settings")
 
 api_key = st.sidebar.text_input("Polygon API Key", type="password")
@@ -33,9 +30,6 @@ if not api_key:
 
 client = RESTClient(api_key)
 
-# -----------------------------
-# PRICE DATA
-# -----------------------------
 def get_price_data(ticker, start, end):
     bars = client.list_aggs(
         ticker=ticker,
@@ -62,9 +56,6 @@ def get_price_data(ticker, start, end):
 data = get_price_data(ticker, date_start, date_end)
 current_price = data["Close"].iloc[-1]
 
-# -----------------------------
-# KPI CARDS
-# -----------------------------
 st.title(f"📊 {ticker} Stock Dashboard")
 
 col1, col2, col3 = st.columns(3)
@@ -72,26 +63,16 @@ col1.metric("Current Price", f"${current_price:.2f}")
 col2.metric("Latest Volume", f"{data['Volume'].iloc[-1]:,}")
 col3.metric("Data Points Loaded", len(data))
 
-# -----------------------------
-# MOVING AVERAGES
-# -----------------------------
 data["MA20"] = data["Close"].rolling(20).mean()
 data["MA50"] = data["Close"].rolling(50).mean()
 data["MA200"] = data["Close"].rolling(200).mean()
 
-# -----------------------------
-# BOLLINGER BANDS
-# -----------------------------
 data["BB_MID"] = data["Close"].rolling(20).mean()
 data["BB_STD"] = data["Close"].rolling(20).std()
 data["BB_UPPER"] = data["BB_MID"] + (2 * data["BB_STD"])
 data["BB_LOWER"] = data["BB_MID"] - (2 * data["BB_STD"])
 
-# -----------------------------
-# PRICE CHART
-# -----------------------------
 fig = go.Figure()
-
 fig.add_trace(go.Scatter(x=data.index, y=data["Close"], name="Close", line=dict(color="white")))
 
 if show_ma:
@@ -113,9 +94,6 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# -----------------------------
-# MACD
-# -----------------------------
 if show_macd:
     data["EMA12"] = data["Close"].ewm(span=12, adjust=False).mean()
     data["EMA26"] = data["Close"].ewm(span=26, adjust=False).mean()
@@ -137,9 +115,6 @@ if show_macd:
 
     st.plotly_chart(fig_macd, use_container_width=True)
 
-# -----------------------------
-# RSI
-# -----------------------------
 if show_rsi:
     delta = data["Close"].diff()
     gain = delta.where(delta > 0, 0)
@@ -165,9 +140,6 @@ if show_rsi:
 
     st.plotly_chart(fig_rsi, use_container_width=True)
 
-# -----------------------------
-# DCF
-# -----------------------------
 if show_dcf:
     fin = client.get_financials(ticker, limit=1)
     f = fin.results[0]
