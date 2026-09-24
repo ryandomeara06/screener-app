@@ -2,13 +2,26 @@ import os
 import requests
 import pandas as pd
 import streamlit as st
-from datetime import datetime
 
-API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY")
 BASE_URL = "https://www.alphavantage.co/query"
+
+# -----------------------------
+# Load API key from local file
+# -----------------------------
+def load_api_key():
+    try:
+        with open("alpha_key.txt", "r") as f:
+            return f.read().strip()
+    except:
+        return None
+
+API_KEY = load_api_key()
 
 st.set_page_config(page_title="Stock Indicator App", layout="wide")
 
+# -----------------------------
+# Alpha Vantage request helper
+# -----------------------------
 def av_get(function, **params):
     resp = requests.get(
         BASE_URL,
@@ -18,6 +31,9 @@ def av_get(function, **params):
     resp.raise_for_status()
     return resp.json()
 
+# -----------------------------
+# Price series
+# -----------------------------
 def get_price_series(symbol):
     ts = av_get("TIME_SERIES_DAILY", symbol=symbol, outputsize="compact")
     data = ts.get("Time Series (Daily)", {})
@@ -36,9 +52,15 @@ def get_price_series(symbol):
     )
     return df
 
+# -----------------------------
+# Overview fundamentals
+# -----------------------------
 def get_overview(symbol):
     return av_get("OVERVIEW", symbol=symbol)
 
+# -----------------------------
+# Parse indicator series
+# -----------------------------
 def parse_indicator_series(ind_json, key_name):
     series = ind_json.get(key_name, {})
     df = pd.DataFrame.from_dict(series, orient="index", dtype=float)
@@ -46,6 +68,9 @@ def parse_indicator_series(ind_json, key_name):
     df = df.sort_index()
     return df
 
+# -----------------------------
+# Trend logic
+# -----------------------------
 def trend_from_ma(price_df, short=20, long=50):
     df = price_df.copy()
     df["MA_short"] = df["close"].rolling(short).mean()
@@ -60,10 +85,13 @@ def trend_from_ma(price_df, short=20, long=50):
     else:
         return "Sideways"
 
+# -----------------------------
+# UI
+# -----------------------------
 st.title("📈 Stock Indicator App (Alpha Vantage)")
 
 if not API_KEY:
-    st.error("Set ALPHAVANTAGE_API_KEY environment variable.")
+    st.error("Missing API key. Create a file named alpha_key.txt with your Alpha Vantage key.")
     st.stop()
 
 symbol = st.text_input("Ticker", value="AAPL").upper()
@@ -72,9 +100,11 @@ if st.button("Analyze"):
     try:
         with st.spinner(f"Fetching data for {symbol}..."):
             price_df = get_price_series(symbol)
+
             rsi_json = av_get("RSI", symbol=symbol, interval="daily", time_period=14, series_type="close")
             macd_json = av_get("MACD", symbol=symbol, interval="daily", series_type="close")
             bb_json = av_get("BBANDS", symbol=symbol, interval="daily", time_period=20, series_type="close")
+
             overview = get_overview(symbol)
 
         st.subheader(f"Price History — {symbol}")
