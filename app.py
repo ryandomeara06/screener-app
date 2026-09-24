@@ -292,4 +292,3 @@ if st.button("Analyze"):
             if current_price:
                 try:
                     cp = float(current_price)
-                    diff = intrinsic - cp
