@@ -1,89 +1,128 @@
-import streamlit as st
-import finnhub
+import os
+import requests
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
+import streamlit as st
+from datetime import datetime
 
-st.set_page_config(page_title="Stock Dashboard", layout="wide")
+API_KEY = os.environ.get("ALPHAVANTAGE_API_KEY")
+BASE_URL = "https://www.alphavantage.co/query"
 
-# Sidebar
-st.sidebar.title("Settings")
-finnhub_key = st.sidebar.text_input("Finnhub API Key", type="password")
-ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
+st.set_page_config(page_title="Stock Indicator App", layout="wide")
 
-if not finnhub_key:
-    st.warning("Enter your Finnhub API key.")
+def av_get(function, **params):
+    resp = requests.get(
+        BASE_URL,
+        params={"function": function, "apikey": API_KEY, **params},
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+def get_price_series(symbol):
+    ts = av_get("TIME_SERIES_DAILY", symbol=symbol, outputsize="compact")
+    data = ts.get("Time Series (Daily)", {})
+    df = pd.DataFrame.from_dict(data, orient="index", dtype=float)
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    df.rename(
+        columns={
+            "1. open": "open",
+            "2. high": "high",
+            "3. low": "low",
+            "4. close": "close",
+            "5. volume": "volume",
+        },
+        inplace=True,
+    )
+    return df
+
+def get_overview(symbol):
+    return av_get("OVERVIEW", symbol=symbol)
+
+def parse_indicator_series(ind_json, key_name):
+    series = ind_json.get(key_name, {})
+    df = pd.DataFrame.from_dict(series, orient="index", dtype=float)
+    df.index = pd.to_datetime(df.index)
+    df = df.sort_index()
+    return df
+
+def trend_from_ma(price_df, short=20, long=50):
+    df = price_df.copy()
+    df["MA_short"] = df["close"].rolling(short).mean()
+    df["MA_long"] = df["close"].rolling(long).mean()
+    latest = df.iloc[-1]
+    if pd.isna(latest["MA_short"]) or pd.isna(latest["MA_long"]):
+        return "Not enough data"
+    if latest["MA_short"] > latest["MA_long"]:
+        return "Uptrend"
+    elif latest["MA_short"] < latest["MA_long"]:
+        return "Downtrend"
+    else:
+        return "Sideways"
+
+st.title("📈 Stock Indicator App (Alpha Vantage)")
+
+if not API_KEY:
+    st.error("Set ALPHAVANTAGE_API_KEY environment variable.")
     st.stop()
 
-client = finnhub.Client(api_key=finnhub_key)
+symbol = st.text_input("Ticker", value="AAPL").upper()
 
-# Price data
-candles = client.stock_candles(ticker, "D", 1609459200, 9999999999)
+if st.button("Analyze"):
+    try:
+        with st.spinner(f"Fetching data for {symbol}..."):
+            price_df = get_price_series(symbol)
+            rsi_json = av_get("RSI", symbol=symbol, interval="daily", time_period=14, series_type="close")
+            macd_json = av_get("MACD", symbol=symbol, interval="daily", series_type="close")
+            bb_json = av_get("BBANDS", symbol=symbol, interval="daily", time_period=20, series_type="close")
+            overview = get_overview(symbol)
 
-df = pd.DataFrame({
-    "Date": pd.to_datetime(candles["t"], unit="s"),
-    "Open": candles["o"],
-    "High": candles["h"],
-    "Low": candles["l"],
-    "Close": candles["c"],
-    "Volume": candles["v"]
-})
+        st.subheader(f"Price History — {symbol}")
+        st.line_chart(price_df["close"])
 
-df = df.set_index("Date")
+        trend = trend_from_ma(price_df)
+        st.write(f"**Trend:** {trend}")
 
-# KPIs
-st.title(f"{ticker} Dashboard")
+        rsi_df = parse_indicator_series(rsi_json, "Technical Analysis: RSI")
+        macd_df = parse_indicator_series(macd_json, "Technical Analysis: MACD")
+        bb_df = parse_indicator_series(bb_json, "Technical Analysis: BBANDS")
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Price", f"${df['Close'][-1]:.2f}")
-col2.metric("Volume", f"{int(df['Volume'][-1])}")
-col3.metric("Data Points", len(df))
+        col1, col2, col3 = st.columns(3)
 
-# Indicators
-df["MA20"] = df["Close"].rolling(20).mean()
-df["MA50"] = df["Close"].rolling(50).mean()
-df["MA200"] = df["Close"].rolling(200).mean()
+        with col1:
+            st.subheader("RSI")
+            if not rsi_df.empty:
+                st.write(f"Latest RSI: {rsi_df.iloc[-1]['RSI']:.2f}")
+            else:
+                st.write("No RSI data")
 
-df["BB_MID"] = df["Close"].rolling(20).mean()
-df["BB_STD"] = df["Close"].rolling(20).std()
-df["BB_UPPER"] = df["BB_MID"] + 2 * df["BB_STD"]
-df["BB_LOWER"] = df["BB_MID"] - 2 * df["BB_STD"]
+        with col2:
+            st.subheader("MACD")
+            if not macd_df.empty:
+                latest = macd_df.iloc[-1]
+                st.write(f"MACD: {latest['MACD']:.4f}")
+                st.write(f"Signal: {latest['MACD_Signal']:.4f}")
+                st.write(f"Hist: {latest['MACD_Hist']:.4f}")
+            else:
+                st.write("No MACD data")
 
-# Price chart
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=df.index, y=df["Close"], name="Close"))
-fig.add_trace(go.Scatter(x=df.index, y=df["MA20"], name="MA20"))
-fig.add_trace(go.Scatter(x=df.index, y=df["MA50"], name="MA50"))
-fig.add_trace(go.Scatter(x=df.index, y=df["MA200"], name="MA200"))
-fig.add_trace(go.Scatter(x=df.index, y=df["BB_UPPER"], name="Upper BB"))
-fig.add_trace(go.Scatter(x=df.index, y=df["BB_LOWER"], name="Lower BB"))
-fig.update_layout(template="plotly_dark", height=500)
-st.plotly_chart(fig, use_container_width=True)
+        with col3:
+            st.subheader("Bollinger Bands")
+            if not bb_df.empty:
+                latest = bb_df.iloc[-1]
+                st.write(f"Upper: {latest['Real Upper Band']:.2f}")
+                st.write(f"Middle: {latest['Real Middle Band']:.2f}")
+                st.write(f"Lower: {latest['Real Lower Band']:.2f}")
+            else:
+                st.write("No Bollinger data")
 
-# MACD
-df["EMA12"] = df["Close"].ewm(span=12).mean()
-df["EMA26"] = df["Close"].ewm(span=26).mean()
-df["MACD"] = df["EMA12"] - df["EMA26"]
-df["Signal"] = df["MACD"].ewm(span=9).mean()
+        st.subheader("Fundamentals")
+        if overview:
+            st.write(f"**Market Cap:** {overview.get('MarketCapitalization')}")
+            st.write(f"**Sector:** {overview.get('Sector')}")
+            st.write(f"**Price-to-Sales (TTM):** {overview.get('PriceToSalesRatioTTM')}")
+        else:
+            st.write("No overview data.")
 
-fig_macd = go.Figure()
-fig_macd.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD"))
-fig_macd.add_trace(go.Scatter(x=df.index, y=df["Signal"], name="Signal"))
-fig_macd.update_layout(template="plotly_dark", height=300)
-st.plotly_chart(fig_macd, use_container_width=True)
-
-# RSI
-delta = df["Close"].diff()
-gain = delta.where(delta > 0, 0)
-loss = -delta.where(delta < 0, 0)
-avg_gain = gain.rolling(14).mean()
-avg_loss = loss.rolling(14).mean()
-rs = avg_gain / avg_loss
-rsi = 100 - (100 / (1 + rs))
-
-fig_rsi = go.Figure()
-fig_rsi.add_trace(go.Scatter(x=df.index, y=rsi, name="RSI"))
-fig_rsi.add_hline(y=70, line_dash="dash", line_color="red")
-fig_rsi.add_hline(y=30, line_dash="dash", line_color="green")
-fig_rsi.update_layout(template="plotly_dark", height=300)
-st.plotly_chart(fig_rsi, use_container_width=True)
+    except Exception as e:
+        st.error(f"Error: {e}")
