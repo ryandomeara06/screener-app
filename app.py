@@ -176,16 +176,14 @@ header {visibility: hidden;}
 
 st.markdown(TERMINAL_CSS, unsafe_allow_html=True)
 
-PLOTLY_TEMPLATE = dict(
-    layout=go.Layout(
-        paper_bgcolor="#10151d",
-        plot_bgcolor="#10151d",
-        font=dict(family="IBM Plex Mono, monospace", color="#e8ecf1", size=12),
-        xaxis=dict(gridcolor="#1f2733", zerolinecolor="#1f2733"),
-        yaxis=dict(gridcolor="#1f2733", zerolinecolor="#1f2733"),
-        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", y=1.02, x=0),
-        margin=dict(l=10, r=10, t=30, b=10),
-    )
+PLOTLY_LAYOUT = dict(
+    paper_bgcolor="#10151d",
+    plot_bgcolor="#10151d",
+    font=dict(family="IBM Plex Mono, monospace", color="#e8ecf1", size=12),
+    xaxis=dict(gridcolor="#1f2733", zerolinecolor="#1f2733"),
+    yaxis=dict(gridcolor="#1f2733", zerolinecolor="#1f2733"),
+    legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", y=1.02, x=0),
+    margin=dict(l=10, r=10, t=30, b=10),
 )
 
 
@@ -501,7 +499,7 @@ if overlay == "MACD":
         marker_color=hist_colors, opacity=0.6
     ), row=2, col=1)
 
-    fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=560)
+    fig.update_layout(**PLOTLY_LAYOUT, height=560)
     fig.update_xaxes(gridcolor="#1f2733")
     fig.update_yaxes(gridcolor="#1f2733")
 
@@ -524,7 +522,7 @@ elif overlay == "Bollinger Bands":
         x=df.index, y=df["Close"], name="Price",
         line=dict(color="#e8ecf1", width=1.8)
     ))
-    fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=560)
+    fig.update_layout(**PLOTLY_LAYOUT, height=560)
 
 else:  # Moving Averages
     fig = go.Figure()
@@ -544,7 +542,7 @@ else:  # Moving Averages
         x=df.index, y=df["MA200"], name="MA200",
         line=dict(color="#ff4757", width=1.3)
     ))
-    fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=560)
+    fig.update_layout(**PLOTLY_LAYOUT, height=560)
 
 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -558,7 +556,7 @@ vol_colors = [
     for i in range(len(df))
 ]
 vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], marker_color=vol_colors, opacity=0.7))
-vol_fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=140)
+vol_fig.update_layout(**PLOTLY_LAYOUT, height=140)
 vol_fig.update_yaxes(title=None)
 st.plotly_chart(vol_fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -578,7 +576,7 @@ with col_left:
     ))
     rsi_fig.add_hline(y=70, line_dash="dash", line_color="#ff4757", opacity=0.6)
     rsi_fig.add_hline(y=30, line_dash="dash", line_color="#00d97e", opacity=0.6)
-    rsi_fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=260)
+    rsi_fig.update_layout(**PLOTLY_LAYOUT, height=260)
     rsi_fig.update_yaxes(range=[0, 100])
     st.plotly_chart(rsi_fig, use_container_width=True, config={"displayModeBar": False})
 
