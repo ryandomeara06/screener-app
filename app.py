@@ -1,306 +1,606 @@
-import os
-import time
-import requests
+"""
+==========================================================
+  TERMINAL // Equity Technicals & Valuation Dashboard
+==========================================================
+A Streamlit app styled after a professional trading terminal.
+
+Currently wired to MOCK DATA so the app is fully functional
+out of the box. Swap `fetch_price_history()` and
+`fetch_fundamentals()` with a real API (Financial Modeling
+Prep, Twelve Data, Finnhub) to go live -- see the
+"DATA SOURCE" section near the top for the one place to edit.
+
+Run locally:
+    pip install -r requirements.txt
+    streamlit run app.py
+==========================================================
+"""
+
+import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
-FINNHUB_BASE = "https://finnhub.io/api/v1"
-FMP_BASE = "https://financialmodelingprep.com/api/v3"
 
-# -----------------------------
-# Load API keys from local files
-# -----------------------------
-def load_key(filename):
-    try:
-        with open(filename, "r") as f:
-            return f.read().strip()
-    except:
-        return None
+# ==========================================================
+# PAGE CONFIG + TERMINAL THEME
+# ==========================================================
+st.set_page_config(
+    page_title="TERMINAL // Equity Dashboard",
+    page_icon="📟",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-FINNHUB_KEY = load_key("finnhub_key.txt")
-FMP_KEY = load_key("fmp_key.txt")
+TERMINAL_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap');
 
-st.set_page_config(page_title="Stock Analysis App", layout="wide")
+:root {
+    --bg-main: #0a0e14;
+    --bg-panel: #10151d;
+    --bg-panel-alt: #141a24;
+    --border-col: #1f2733;
+    --text-primary: #e8ecf1;
+    --text-secondary: #7d8899;
+    --accent-orange: #ff9f0a;
+    --accent-green: #00d97e;
+    --accent-red: #ff4757;
+    --accent-blue: #2196f3;
+    --accent-amber: #ffb300;
+}
 
-# -----------------------------
-# Finnhub helpers
-# -----------------------------
-def fh_get(path, params=None):
-    if params is None:
-        params = {}
-    params["token"] = FINNHUB_KEY
-    resp = requests.get(f"{FINNHUB_BASE}/{path}", params=params, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
+html, body, [class*="css"]  {
+    font-family: 'Inter', sans-serif;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+}
 
-def get_price_series(symbol, days=365):
-    now = int(time.time())
-    frm = now - days * 24 * 60 * 60
-    data = fh_get("stock/candle", {
-        "symbol": symbol,
-        "resolution": "D",
-        "from": frm,
-        "to": now
-    })
-    if data.get("s") != "ok":
-        return pd.DataFrame()
+.stApp {
+    background-color: var(--bg-main);
+}
+
+/* Monospace for numbers / tickers */
+.mono {
+    font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Header bar */
+.terminal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 20px;
+    background: linear-gradient(180deg, #12161f 0%, #0d1117 100%);
+    border: 1px solid var(--border-col);
+    border-radius: 4px;
+    margin-bottom: 16px;
+}
+.terminal-header .brand {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 20px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--accent-orange);
+}
+.terminal-header .brand span {
+    color: var(--text-secondary);
+    font-weight: 400;
+    font-size: 12px;
+    letter-spacing: 1px;
+    display: block;
+}
+.terminal-header .clock {
+    font-family: 'IBM Plex Mono', monospace;
+    color: var(--text-secondary);
+    font-size: 13px;
+    text-align: right;
+}
+
+/* Metric cards */
+.metric-card {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-col);
+    border-radius: 4px;
+    padding: 14px 16px;
+    height: 100%;
+}
+.metric-card .label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 1.5px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+.metric-card .value {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+.metric-card .sub {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    margin-top: 4px;
+}
+
+.pos { color: var(--accent-green) !important; }
+.neg { color: var(--accent-red) !important; }
+.neutral { color: var(--accent-amber) !important; }
+
+/* Trend badge */
+.badge {
+    display: inline-block;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 4px 12px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+.badge-up { background: rgba(0, 217, 126, 0.12); color: var(--accent-green); border: 1px solid rgba(0, 217, 126, 0.35); }
+.badge-down { background: rgba(255, 71, 87, 0.12); color: var(--accent-red); border: 1px solid rgba(255, 71, 87, 0.35); }
+.badge-mixed { background: rgba(255, 179, 0, 0.12); color: var(--accent-amber); border: 1px solid rgba(255, 179, 0, 0.35); }
+
+/* Section divider labels */
+.section-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--border-col);
+    padding-bottom: 6px;
+    margin: 18px 0 10px 0;
+}
+
+/* Sidebar */
+section[data-testid="stSidebar"] {
+    background-color: var(--bg-panel);
+    border-right: 1px solid var(--border-col);
+}
+
+/* Data table tweaks */
+.stDataFrame { font-family: 'IBM Plex Mono', monospace; }
+
+/* Hide default streamlit chrome */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+</style>
+"""
+
+st.markdown(TERMINAL_CSS, unsafe_allow_html=True)
+
+PLOTLY_TEMPLATE = dict(
+    layout=go.Layout(
+        paper_bgcolor="#10151d",
+        plot_bgcolor="#10151d",
+        font=dict(family="IBM Plex Mono, monospace", color="#e8ecf1", size=12),
+        xaxis=dict(gridcolor="#1f2733", zerolinecolor="#1f2733"),
+        yaxis=dict(gridcolor="#1f2733", zerolinecolor="#1f2733"),
+        legend=dict(bgcolor="rgba(0,0,0,0)", orientation="h", y=1.02, x=0),
+        margin=dict(l=10, r=10, t=30, b=10),
+    )
+)
+
+
+# ==========================================================
+# DATA SOURCE  -- swap this section for a real API later
+# ==========================================================
+# To go live: replace the bodies of fetch_price_history() and
+# fetch_fundamentals() with calls to e.g. Financial Modeling Prep,
+# Twelve Data, or Finnhub. Keep the same return shape and every
+# calculation below keeps working unchanged.
+
+@st.cache_data(ttl=300)
+def fetch_price_history(ticker: str, years: int = 5) -> pd.DataFrame:
+    """
+    MOCK price history generator (deterministic per-ticker via seed).
+    Replace with a real API call, e.g.:
+
+        import requests
+        r = requests.get(f"https://api.twelvedata.com/time_series?symbol={ticker}&interval=1day&outputsize=1300&apikey=YOUR_KEY")
+        df = pd.DataFrame(r.json()["values"])
+        ...
+    Must return a DataFrame indexed by date with a "Close" column
+    (and ideally Open/High/Low/Volume).
+    """
+    seed = abs(hash(ticker)) % (2**32)
+    rng = np.random.default_rng(seed)
+
+    n_days = years * 252
+    dates = pd.bdate_range(end=datetime.today(), periods=n_days)
+
+    start_price = rng.uniform(15, 250)
+    drift = rng.uniform(-0.0003, 0.0007)
+    vol = rng.uniform(0.015, 0.035)
+
+    returns = rng.normal(drift, vol, n_days)
+    # occasional regime shocks for realism
+    shock_idx = rng.choice(n_days, size=max(3, n_days // 150), replace=False)
+    returns[shock_idx] += rng.normal(0, 0.06, len(shock_idx))
+
+    price = start_price * np.exp(np.cumsum(returns))
+    close = pd.Series(price, index=dates)
+
+    daily_range = close * rng.uniform(0.01, 0.03, n_days)
+    high = close + daily_range * rng.uniform(0.2, 1.0, n_days)
+    low = close - daily_range * rng.uniform(0.2, 1.0, n_days)
+    open_ = low + (high - low) * rng.uniform(0.2, 0.8, n_days)
+    volume = rng.integers(500_000, 15_000_000, n_days)
 
     df = pd.DataFrame({
-        "t": data["t"],
-        "open": data["o"],
-        "high": data["h"],
-        "low": data["l"],
-        "close": data["c"],
-        "volume": data["v"],
-    })
-    df["date"] = pd.to_datetime(df["t"], unit="s")
-    df.set_index("date", inplace=True)
-    df.drop(columns=["t"], inplace=True)
+        "Open": open_, "High": high, "Low": low,
+        "Close": close, "Volume": volume,
+    }, index=dates)
+    df.index.name = "Date"
     return df
 
-def get_indicator(symbol, indicator, extra_params=None, days=365):
-    if extra_params is None:
-        extra_params = {}
-    now = int(time.time())
-    frm = now - days * 24 * 60 * 60
-    params = {
-        "symbol": symbol,
-        "resolution": "D",
-        "from": frm,
-        "to": now,
-        "indicator": indicator,
+
+@st.cache_data(ttl=300)
+def fetch_fundamentals(ticker: str, last_price: float) -> dict:
+    """
+    MOCK fundamentals generator. Replace with a real API call
+    returning at least: marketCap, totalRevenue, sector, name.
+    """
+    seed = abs(hash(ticker + "fund")) % (2**32)
+    rng = np.random.default_rng(seed)
+
+    shares_out = rng.uniform(20e6, 2e9)
+    market_cap = shares_out * last_price
+    revenue = market_cap / rng.uniform(1.5, 12)  # implies a P/S range
+    sectors = ["Technology", "Healthcare", "Financials", "Energy",
+               "Consumer Discretionary", "Industrials", "Materials"]
+    return {
+        "name": f"{ticker} Corp.",
+        "sector": sectors[int(seed) % len(sectors)],
+        "marketCap": market_cap,
+        "totalRevenue": revenue,
+        "sharesOutstanding": shares_out,
     }
-    params.update(extra_params)
-    data = fh_get("indicator", params)
-    if "t" not in data or len(data["t"]) == 0:
-        return pd.DataFrame()
 
-    df = pd.DataFrame({"t": data["t"]})
-    df["date"] = pd.to_datetime(df["t"], unit="s")
-    df.set_index("date", inplace=True)
-    df.drop(columns=["t"], inplace=True)
 
-    for key, values in data.items():
-        if key in ["s", "t"]:
-            continue
-        df[key] = values
+# ==========================================================
+# CALCULATION ENGINE  (from the notebook, generalized)
+# ==========================================================
 
+def add_moving_averages(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["MA20"] = df["Close"].rolling(20).mean()
+    df["MA50"] = df["Close"].rolling(50).mean()
+    df["MA200"] = df["Close"].rolling(200).mean()
     return df
 
-# -----------------------------
-# FMP helpers
-# -----------------------------
-def fmp_get(path, params=None):
-    if params is None:
-        params = {}
-    params["apikey"] = FMP_KEY
-    resp = requests.get(f"{FMP_BASE}/{path}", params=params, timeout=10)
-    resp.raise_for_status()
-    return resp.json()
 
-def get_fmp_profile(symbol):
-    data = fmp_get(f"profile/{symbol}")
-    return data[0] if data else {}
+def compute_trend(df: pd.DataFrame) -> str:
+    current_price = df["Close"].iloc[-1]
+    ma20, ma50, ma200 = df["MA20"].iloc[-1], df["MA50"].iloc[-1], df["MA200"].iloc[-1]
 
-def get_fmp_ratios(symbol):
-    data = fmp_get(f"ratios-ttm/{symbol}")
-    return data[0] if data else {}
+    if any(pd.isna(x) for x in [ma20, ma50, ma200]):
+        return "mixed"
 
-def get_fmp_cashflow(symbol):
-    data = fmp_get(f"cash-flow-statement/{symbol}", {"limit": 1})
-    return data[0] if data else {}
-
-# -----------------------------
-# Trend logic
-# -----------------------------
-def trend_from_ma(price_df, short=20, long=50):
-    df = price_df.copy()
-    df["MA_short"] = df["close"].rolling(short).mean()
-    df["MA_long"] = df["close"].rolling(long).mean()
-    latest = df.iloc[-1]
-    if pd.isna(latest["MA_short"]) or pd.isna(latest["MA_long"]):
-        return "Not enough data"
-    if latest["MA_short"] > latest["MA_long"]:
-        return "Uptrend"
-    elif latest["MA_short"] < latest["MA_long"]:
-        return "Downtrend"
+    if current_price > ma20 and current_price > ma50 and current_price > ma200:
+        return "up"
+    elif current_price < ma20 and current_price < ma50 and current_price < ma200:
+        return "down"
     else:
-        return "Sideways"
+        return "mixed"
 
-# -----------------------------
-# DCF valuation (simple version)
-# -----------------------------
-def dcf_valuation(symbol):
-    profile = get_fmp_profile(symbol)
-    cashflow = get_fmp_cashflow(symbol)
 
-    try:
-        fcf = float(cashflow.get("freeCashFlow", 0))
-    except:
-        fcf = 0.0
+def compute_rsi_series(close: pd.Series, period: int = 14) -> pd.Series:
+    delta = close.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
 
-    try:
-        shares = float(profile.get("sharesOutstanding", 0))
-    except:
-        shares = 0.0
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
 
-    if fcf <= 0 or shares <= 0:
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    rsi = rsi.fillna(50)  # neutral when undefined
+    rsi[(avg_loss == 0) & (avg_gain > 0)] = 100
+    rsi[(avg_gain == 0) & (avg_loss > 0)] = 0
+    return rsi
+
+
+def compute_macd(close: pd.Series, fast=12, slow=26, signal=9):
+    ema_fast = close.ewm(span=fast, adjust=False).mean()
+    ema_slow = close.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return macd_line, signal_line, histogram
+
+
+def compute_bollinger_bands(close: pd.Series, period=20, num_std=2):
+    mid = close.rolling(period).mean()
+    std = close.rolling(period).std()
+    upper = mid + num_std * std
+    lower = mid - num_std * std
+    return upper, mid, lower
+
+
+def compute_price_to_sales(market_cap, revenue):
+    if not market_cap or not revenue or revenue == 0:
         return None
+    return market_cap / revenue
 
-    growth = 0.10
-    discount = 0.10
-    terminal_multiple = 10
 
-    cash_flows = []
-    for year in range(1, 6):
-        cf = fcf * ((1 + growth) ** year)
-        cash_flows.append(cf)
+def fmt_money(x):
+    if x is None or pd.isna(x):
+        return "N/A"
+    if abs(x) >= 1e12:
+        return f"${x/1e12:.2f}T"
+    if abs(x) >= 1e9:
+        return f"${x/1e9:.2f}B"
+    if abs(x) >= 1e6:
+        return f"${x/1e6:.2f}M"
+    return f"${x:,.2f}"
 
-    pv_cash_flows = [cf / ((1 + discount) ** i) for i, cf in enumerate(cash_flows, start=1)]
-    terminal_value = cash_flows[-1] * terminal_multiple
-    pv_terminal = terminal_value / ((1 + discount) ** 5)
 
-    intrinsic_equity = sum(pv_cash_flows) + pv_terminal
-    intrinsic_per_share = intrinsic_equity / shares
-    return intrinsic_per_share
-
-# -----------------------------
-# UI - Page 1
-# -----------------------------
-st.title("📈 Stock Analysis (Finnhub + FMP)")
-
-if not FINNHUB_KEY or not FMP_KEY:
-    st.error("Missing API keys. Create finnhub_key.txt and fmp_key.txt with your API keys.")
-    st.stop()
-
+# ==========================================================
+# SIDEBAR -- CONTROLS
+# ==========================================================
 with st.sidebar:
-    symbol = st.text_input("Ticker", value="AAPL").upper()
-    days = st.slider("Days of history", 90, 1500, 365)
-    overlay = st.selectbox(
-        "Chart overlay",
-        ["Moving Averages", "Bollinger Bands", "MACD"]
+    st.markdown('<div class="section-label">TICKER LOOKUP</div>', unsafe_allow_html=True)
+    ticker_input = st.text_input("Symbol", value="AAPL", label_visibility="collapsed").strip().upper()
+
+    st.markdown('<div class="section-label">TIME RANGE</div>', unsafe_allow_html=True)
+    range_choice = st.select_slider(
+        "Lookback",
+        options=["3M", "6M", "1Y", "2Y", "5Y"],
+        value="1Y",
+        label_visibility="collapsed",
     )
 
-if st.button("Analyze"):
-    try:
-        with st.spinner(f"Fetching data for {symbol}..."):
-            price_df = get_price_series(symbol, days=days)
-            if price_df.empty:
-                st.error("No price data returned.")
-                st.stop()
+    st.markdown('<div class="section-label">CHART OVERLAY</div>', unsafe_allow_html=True)
+    overlay = st.radio(
+        "Overlay",
+        options=["Moving Averages", "Bollinger Bands", "MACD"],
+        label_visibility="collapsed",
+    )
 
-            rsi_df = get_indicator(symbol, "rsi", {"timeperiod": 14}, days=days)
-            macd_df = get_indicator(symbol, "macd", {
-                "fastperiod": 12,
-                "slowperiod": 26,
-                "signalperiod": 9
-            }, days=days)
-            bb_df = get_indicator(symbol, "bbands", {
-                "timeperiod": 20,
-                "nbdevup": 2,
-                "nbdevdn": 2
-            }, days=days)
+    st.markdown('<div class="section-label">DATA SOURCE</div>', unsafe_allow_html=True)
+    st.caption("🟡 Mock data mode — swap in a live API in `fetch_price_history()` / `fetch_fundamentals()`.")
 
-            profile = get_fmp_profile(symbol)
-            ratios = get_fmp_ratios(symbol)
-            intrinsic = dcf_valuation(symbol)
+    st.markdown("---")
+    st.caption("Built for deployment on Streamlit Community Cloud. See `requirements.txt`.")
 
-        # Moving averages
-        price_df["MA20"] = price_df["close"].rolling(20).mean()
-        price_df["MA50"] = price_df["close"].rolling(50).mean()
-        price_df["MA200"] = price_df["close"].rolling(200).mean()
 
-        # Merge overlays
-        chart_df = price_df.copy()
+RANGE_DAYS = {"3M": 63, "6M": 126, "1Y": 252, "2Y": 504, "5Y": 1260}
 
-        if overlay == "Moving Averages":
-            st.subheader("Price with Moving Averages")
-            st.line_chart(chart_df[["close", "MA20", "MA50", "MA200"]])
 
-        elif overlay == "Bollinger Bands":
-            if not bb_df.empty:
-                chart_df = chart_df.join(bb_df[["upper", "middle", "lower"]], how="left")
-                st.subheader("Price with Bollinger Bands")
-                st.line_chart(chart_df[["close", "upper", "middle", "lower"]])
-            else:
-                st.subheader("Price (no Bollinger data)")
-                st.line_chart(chart_df["close"])
+# ==========================================================
+# HEADER
+# ==========================================================
+now_str = datetime.now().strftime("%a %d %b %Y  %H:%M:%S")
+st.markdown(f"""
+<div class="terminal-header">
+    <div class="brand">TERMINAL <span>EQUITY TECHNICALS &amp; VALUATION</span></div>
+    <div class="clock">{now_str}<br>SESSION: MOCK DATA FEED</div>
+</div>
+""", unsafe_allow_html=True)
 
-        elif overlay == "MACD":
-            st.subheader("Price (MACD shown below)")
-            st.line_chart(chart_df["close"])
-            if not macd_df.empty:
-                st.subheader("MACD")
-                st.line_chart(macd_df[["macd", "signal", "hist"]])
-            else:
-                st.write("No MACD data.")
+if not ticker_input:
+    st.stop()
 
-        # Trend
-        trend = trend_from_ma(price_df)
-        st.write(f"**Trend:** {trend}")
+# ==========================================================
+# FETCH + COMPUTE
+# ==========================================================
+raw = fetch_price_history(ticker_input, years=5)
+df_full = add_moving_averages(raw)
+df_full["RSI"] = compute_rsi_series(df_full["Close"])
+df_full["MACD"], df_full["MACD_SIGNAL"], df_full["MACD_HIST"] = compute_macd(df_full["Close"])
+df_full["BB_UPPER"], df_full["BB_MID"], df_full["BB_LOWER"] = compute_bollinger_bands(df_full["Close"])
 
-        # Indicators summary
-        col1, col2, col3 = st.columns(3)
+trend = compute_trend(df_full)
+current_price = df_full["Close"].iloc[-1]
+prev_price = df_full["Close"].iloc[-2]
+change = current_price - prev_price
+change_pct = (change / prev_price) * 100
 
-        with col1:
-            st.subheader("RSI")
-            if not rsi_df.empty:
-                latest_rsi = rsi_df.iloc[-1]["rsi"]
-                st.write(f"Latest RSI: {latest_rsi:.2f}")
-            else:
-                st.write("No RSI data.")
+fundamentals = fetch_fundamentals(ticker_input, current_price)
+ps_ratio = compute_price_to_sales(fundamentals["marketCap"], fundamentals["totalRevenue"])
+rsi_now = df_full["RSI"].iloc[-1]
 
-        with col2:
-            st.subheader("MACD (latest)")
-            if not macd_df.empty:
-                latest = macd_df.iloc[-1]
-                st.write(f"MACD: {latest['macd']:.4f}")
-                st.write(f"Signal: {latest['signal']:.4f}")
-                st.write(f"Hist: {latest['hist']:.4f}")
-            else:
-                st.write("No MACD data.")
+n_days = RANGE_DAYS[range_choice]
+df = df_full.tail(n_days).copy()
 
-        with col3:
-            st.subheader("Bollinger Bands (latest)")
-            if not bb_df.empty:
-                latest = bb_df.iloc[-1]
-                st.write(f"Upper: {latest['upper']:.2f}")
-                st.write(f"Middle: {latest['middle']:.2f}")
-                st.write(f"Lower: {latest['lower']:.2f}")
-            else:
-                st.write("No Bollinger data.")
+trend_badge_class = {"up": "badge-up", "down": "badge-down", "mixed": "badge-mixed"}[trend]
+trend_label = {"up": "▲ UPTREND", "down": "▼ DOWNTREND", "mixed": "◆ MIXED"}[trend]
+price_color_class = "pos" if change >= 0 else "neg"
+arrow = "▲" if change >= 0 else "▼"
 
-        # Fundamentals
-        st.subheader("Fundamentals (FMP)")
-        if profile:
-            st.write(f"**Company:** {profile.get('companyName')}")
-            st.write(f"**Sector:** {profile.get('sector')}")
-            st.write(f"**Country:** {profile.get('country')}")
-            st.write(f"**Market Cap:** {profile.get('marketCap')}")
-        else:
-            st.write("No profile data.")
+if rsi_now >= 70:
+    rsi_class, rsi_note = "neg", "OVERBOUGHT"
+elif rsi_now <= 30:
+    rsi_class, rsi_note = "pos", "OVERSOLD"
+else:
+    rsi_class, rsi_note = "neutral", "NEUTRAL"
 
-        if ratios:
-            st.write(f"**Price-to-Sales (TTM):** {ratios.get('priceToSalesTTM')}")
 
-        # DCF valuation
-        st.subheader("Intrinsic Value (Simple DCF)")
-        if intrinsic is not None:
-            current_price = profile.get("price")
-            st.write(f"**Intrinsic value per share:** {intrinsic:.2f}")
-            if current_price:
-                try:
-                    cp = float(current_price)
-                    diff = intrinsic - cp
-                    if diff > 0:
-                        st.write(f"Stock appears **undervalued** by {diff:.2f} per share.")
-                    else:
-                        st.write(f"Stock appears **overvalued** by {abs(diff):.2f} per share.")
-                except:
-                    st.write("Unable to compare intrinsic value to current price.")
-        else:
-            st.write("Not enough data to compute DCF intrinsic value.")
+# ==========================================================
+# TOP METRIC ROW
+# ==========================================================
+c1, c2, c3, c4, c5 = st.columns(5)
 
-    except Exception as e:
-        st.error(f"Error: {e}")
+with c1:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">{fundamentals['name']} · {ticker_input}</div>
+        <div class="value">${current_price:,.2f}</div>
+        <div class="sub {price_color_class}">{arrow} {change:+.2f} ({change_pct:+.2f}%)</div>
+    </div>""", unsafe_allow_html=True)
+
+with c2:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">Trend Signal</div>
+        <div class="value"><span class="badge {trend_badge_class}">{trend_label}</span></div>
+        <div class="sub mono" style="color:var(--text-secondary)">vs MA20/50/200</div>
+    </div>""", unsafe_allow_html=True)
+
+with c3:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">RSI (14)</div>
+        <div class="value">{rsi_now:.1f}</div>
+        <div class="sub {rsi_class}">{rsi_note}</div>
+    </div>""", unsafe_allow_html=True)
+
+with c4:
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">Market Cap</div>
+        <div class="value">{fmt_money(fundamentals['marketCap'])}</div>
+        <div class="sub mono" style="color:var(--text-secondary)">{fundamentals['sector']}</div>
+    </div>""", unsafe_allow_html=True)
+
+with c5:
+    ps_display = f"{ps_ratio:.2f}x" if ps_ratio else "N/A"
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">Price / Sales</div>
+        <div class="value">{ps_display}</div>
+        <div class="sub mono" style="color:var(--text-secondary)">Rev {fmt_money(fundamentals['totalRevenue'])}</div>
+    </div>""", unsafe_allow_html=True)
+
+
+# ==========================================================
+# MAIN CHART -- toggleable overlay
+# ==========================================================
+st.markdown(f'<div class="section-label">PRICE CHART — {overlay.upper()}</div>', unsafe_allow_html=True)
+
+if overlay == "MACD":
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=True,
+        row_heights=[0.65, 0.35], vertical_spacing=0.04,
+    )
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["Close"], name="Price",
+        line=dict(color="#e8ecf1", width=1.6)
+    ), row=1, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["MACD"], name="MACD",
+        line=dict(color="#2196f3", width=1.4)
+    ), row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["MACD_SIGNAL"], name="Signal",
+        line=dict(color="#ff9f0a", width=1.4)
+    ), row=2, col=1)
+
+    hist_colors = ["#00d97e" if v >= 0 else "#ff4757" for v in df["MACD_HIST"]]
+    fig.add_trace(go.Bar(
+        x=df.index, y=df["MACD_HIST"], name="Histogram",
+        marker_color=hist_colors, opacity=0.6
+    ), row=2, col=1)
+
+    fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=560)
+    fig.update_xaxes(gridcolor="#1f2733")
+    fig.update_yaxes(gridcolor="#1f2733")
+
+elif overlay == "Bollinger Bands":
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["BB_UPPER"], name="Upper Band",
+        line=dict(color="#7d8899", width=1, dash="dot")
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["BB_LOWER"], name="Lower Band",
+        line=dict(color="#7d8899", width=1, dash="dot"),
+        fill="tonexty", fillcolor="rgba(125,136,153,0.08)"
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["BB_MID"], name="MA20 (Basis)",
+        line=dict(color="#ffb300", width=1.2, dash="dash")
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["Close"], name="Price",
+        line=dict(color="#e8ecf1", width=1.8)
+    ))
+    fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=560)
+
+else:  # Moving Averages
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["Close"], name="Price",
+        line=dict(color="#e8ecf1", width=1.8)
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["MA20"], name="MA20",
+        line=dict(color="#2196f3", width=1.3)
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["MA50"], name="MA50",
+        line=dict(color="#ff9f0a", width=1.3)
+    ))
+    fig.add_trace(go.Scatter(
+        x=df.index, y=df["MA200"], name="MA200",
+        line=dict(color="#ff4757", width=1.3)
+    ))
+    fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=560)
+
+st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+# ==========================================================
+# VOLUME STRIP
+# ==========================================================
+st.markdown('<div class="section-label">VOLUME</div>', unsafe_allow_html=True)
+vol_colors = [
+    "#00d97e" if df["Close"].iloc[i] >= df["Open"].iloc[i] else "#ff4757"
+    for i in range(len(df))
+]
+vol_fig = go.Figure(go.Bar(x=df.index, y=df["Volume"], marker_color=vol_colors, opacity=0.7))
+vol_fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=140)
+vol_fig.update_yaxes(title=None)
+st.plotly_chart(vol_fig, use_container_width=True, config={"displayModeBar": False})
+
+
+# ==========================================================
+# BOTTOM ROW -- RSI history + fundamentals table
+# ==========================================================
+col_left, col_right = st.columns([2, 1])
+
+with col_left:
+    st.markdown('<div class="section-label">RSI (14) — HISTORY</div>', unsafe_allow_html=True)
+    rsi_fig = go.Figure()
+    rsi_fig.add_trace(go.Scatter(
+        x=df.index, y=df["RSI"], name="RSI",
+        line=dict(color="#2196f3", width=1.5), fill="tozeroy",
+        fillcolor="rgba(33,150,243,0.08)"
+    ))
+    rsi_fig.add_hline(y=70, line_dash="dash", line_color="#ff4757", opacity=0.6)
+    rsi_fig.add_hline(y=30, line_dash="dash", line_color="#00d97e", opacity=0.6)
+    rsi_fig.update_layout(**PLOTLY_TEMPLATE["layout"], height=260)
+    rsi_fig.update_yaxes(range=[0, 100])
+    st.plotly_chart(rsi_fig, use_container_width=True, config={"displayModeBar": False})
+
+with col_right:
+    st.markdown('<div class="section-label">FUNDAMENTALS SNAPSHOT</div>', unsafe_allow_html=True)
+    snap = pd.DataFrame({
+        "Metric": ["Sector", "Market Cap", "Revenue (TTM)", "Price / Sales", "Shares Out", "52W High", "52W Low"],
+        "Value": [
+            fundamentals["sector"],
+            fmt_money(fundamentals["marketCap"]),
+            fmt_money(fundamentals["totalRevenue"]),
+            f"{ps_ratio:.2f}x" if ps_ratio else "N/A",
+            f"{fundamentals['sharesOutstanding']/1e6:.1f}M",
+            f"${df_full['Close'].tail(252).max():.2f}",
+            f"${df_full['Close'].tail(252).min():.2f}",
+        ],
+    })
+    st.dataframe(snap, hide_index=True, use_container_width=True, height=280)
+
+st.markdown(
+    '<div style="text-align:center; color:#4a5568; font-family:\'IBM Plex Mono\',monospace; '
+    'font-size:11px; margin-top:20px;">MOCK DATA — for real-time quotes, connect a live market data API. '
+    'Not investment advice.</div>',
+    unsafe_allow_html=True,
+)
