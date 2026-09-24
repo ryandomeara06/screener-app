@@ -1,72 +1,115 @@
 import os
+import time
 import requests
 import pandas as pd
 import streamlit as st
+from datetime import datetime, timedelta
 
-BASE_URL = "https://www.alphavantage.co/query"
+FINNHUB_BASE = "https://finnhub.io/api/v1"
+FMP_BASE = "https://financialmodelingprep.com/api/v3"
 
 # -----------------------------
-# Load API key from local file
+# Load API keys from local files
 # -----------------------------
-def load_api_key():
+def load_key(filename):
     try:
-        with open("alpha_key.txt", "r") as f:
+        with open(filename, "r") as f:
             return f.read().strip()
     except:
         return None
 
-API_KEY = load_api_key()
+FINNHUB_KEY = load_key("finnhub_key.txt")
+FMP_KEY = load_key("fmp_key.txt")
 
-st.set_page_config(page_title="Stock Indicator App", layout="wide")
+st.set_page_config(page_title="Stock Analysis App", layout="wide")
 
 # -----------------------------
-# Alpha Vantage request helper
+# Finnhub helpers
 # -----------------------------
-def av_get(function, **params):
-    resp = requests.get(
-        BASE_URL,
-        params={"function": function, "apikey": API_KEY, **params},
-        timeout=10,
-    )
+def fh_get(path, params=None):
+    if params is None:
+        params = {}
+    params["token"] = FINNHUB_KEY
+    resp = requests.get(f"{FINNHUB_BASE}/{path}", params=params, timeout=10)
     resp.raise_for_status()
     return resp.json()
 
-# -----------------------------
-# Price series
-# -----------------------------
-def get_price_series(symbol):
-    ts = av_get("TIME_SERIES_DAILY", symbol=symbol, outputsize="compact")
-    data = ts.get("Time Series (Daily)", {})
-    df = pd.DataFrame.from_dict(data, orient="index", dtype=float)
-    df.index = pd.to_datetime(df.index)
-    df = df.sort_index()
-    df.rename(
-        columns={
-            "1. open": "open",
-            "2. high": "high",
-            "3. low": "low",
-            "4. close": "close",
-            "5. volume": "volume",
-        },
-        inplace=True,
-    )
+def get_price_series(symbol, days=365):
+    now = int(time.time())
+    frm = now - days * 24 * 60 * 60
+    data = fh_get("stock/candle", {
+        "symbol": symbol,
+        "resolution": "D",
+        "from": frm,
+        "to": now
+    })
+    if data.get("s") != "ok":
+        return pd.DataFrame()
+
+    df = pd.DataFrame({
+        "t": data["t"],
+        "open": data["o"],
+        "high": data["h"],
+        "low": data["l"],
+        "close": data["c"],
+        "volume": data["v"],
+    })
+    df["date"] = pd.to_datetime(df["t"], unit="s")
+    df.set_index("date", inplace=True)
+    df.drop(columns=["t"], inplace=True)
+    return df
+
+def get_indicator(symbol, indicator, extra_params=None, days=365):
+    if extra_params is None:
+        extra_params = {}
+    now = int(time.time())
+    frm = now - days * 24 * 60 * 60
+    params = {
+        "symbol": symbol,
+        "resolution": "D",
+        "from": frm,
+        "to": now,
+        "indicator": indicator,
+    }
+    params.update(extra_params)
+    data = fh_get("indicator", params)
+    if "t" not in data or len(data["t"]) == 0:
+        return pd.DataFrame()
+
+    df = pd.DataFrame({"t": data["t"]})
+    df["date"] = pd.to_datetime(df["t"], unit="s")
+    df.set_index("date", inplace=True)
+    df.drop(columns=["t"], inplace=True)
+
+    for key, values in data.items():
+        if key in ["s", "t"]:
+            continue
+        df[key] = values
+
     return df
 
 # -----------------------------
-# Overview fundamentals
+# FMP helpers
 # -----------------------------
-def get_overview(symbol):
-    return av_get("OVERVIEW", symbol=symbol)
+def fmp_get(path, params=None):
+    if params is None:
+        params = {}
+    params["apikey"] = FMP_KEY
+    resp = requests.get(f"{FMP_BASE}/{path}", params=params, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
 
-# -----------------------------
-# Parse indicator series
-# -----------------------------
-def parse_indicator_series(ind_json, key_name):
-    series = ind_json.get(key_name, {})
-    df = pd.DataFrame.from_dict(series, orient="index", dtype=float)
-    df.index = pd.to_datetime(df.index)
-    df = df.sort_index()
-    return df
+def get_fmp_profile(symbol):
+    data = fmp_get(f"profile/{symbol}")
+    return data[0] if data else {}
+
+def get_fmp_ratios(symbol):
+    data = fmp_get(f"ratios-ttm/{symbol}")
+    return data[0] if data else {}
+
+def get_fmp_cashflow(symbol):
+    data = fmp_get(f"cash-flow-statement/{symbol}", {"limit": 1})
+    return data[0] if data else {}
 
 # -----------------------------
 # Trend logic
@@ -86,73 +129,167 @@ def trend_from_ma(price_df, short=20, long=50):
         return "Sideways"
 
 # -----------------------------
-# UI
+# DCF valuation (simple version)
 # -----------------------------
-st.title("📈 Stock Indicator App (Alpha Vantage)")
+def dcf_valuation(symbol):
+    profile = get_fmp_profile(symbol)
+    cashflow = get_fmp_cashflow(symbol)
 
-if not API_KEY:
-    st.error("Missing API key. Create a file named alpha_key.txt with your Alpha Vantage key.")
+    try:
+        fcf = float(cashflow.get("freeCashFlow", 0))
+    except:
+        fcf = 0.0
+
+    try:
+        shares = float(profile.get("sharesOutstanding", 0))
+    except:
+        shares = 0.0
+
+    if fcf <= 0 or shares <= 0:
+        return None
+
+    growth = 0.10
+    discount = 0.10
+    terminal_multiple = 10
+
+    cash_flows = []
+    for year in range(1, 6):
+        cf = fcf * ((1 + growth) ** year)
+        cash_flows.append(cf)
+
+    pv_cash_flows = [cf / ((1 + discount) ** i) for i, cf in enumerate(cash_flows, start=1)]
+    terminal_value = cash_flows[-1] * terminal_multiple
+    pv_terminal = terminal_value / ((1 + discount) ** 5)
+
+    intrinsic_equity = sum(pv_cash_flows) + pv_terminal
+    intrinsic_per_share = intrinsic_equity / shares
+    return intrinsic_per_share
+
+# -----------------------------
+# UI - Page 1
+# -----------------------------
+st.title("📈 Stock Analysis (Finnhub + FMP)")
+
+if not FINNHUB_KEY or not FMP_KEY:
+    st.error("Missing API keys. Create finnhub_key.txt and fmp_key.txt with your API keys.")
     st.stop()
 
-symbol = st.text_input("Ticker", value="AAPL").upper()
+with st.sidebar:
+    symbol = st.text_input("Ticker", value="AAPL").upper()
+    days = st.slider("Days of history", 90, 1500, 365)
+    overlay = st.selectbox(
+        "Chart overlay",
+        ["Moving Averages", "Bollinger Bands", "MACD"]
+    )
 
 if st.button("Analyze"):
     try:
         with st.spinner(f"Fetching data for {symbol}..."):
-            price_df = get_price_series(symbol)
+            price_df = get_price_series(symbol, days=days)
+            if price_df.empty:
+                st.error("No price data returned.")
+                st.stop()
 
-            rsi_json = av_get("RSI", symbol=symbol, interval="daily", time_period=14, series_type="close")
-            macd_json = av_get("MACD", symbol=symbol, interval="daily", series_type="close")
-            bb_json = av_get("BBANDS", symbol=symbol, interval="daily", time_period=20, series_type="close")
+            rsi_df = get_indicator(symbol, "rsi", {"timeperiod": 14}, days=days)
+            macd_df = get_indicator(symbol, "macd", {
+                "fastperiod": 12,
+                "slowperiod": 26,
+                "signalperiod": 9
+            }, days=days)
+            bb_df = get_indicator(symbol, "bbands", {
+                "timeperiod": 20,
+                "nbdevup": 2,
+                "nbdevdn": 2
+            }, days=days)
 
-            overview = get_overview(symbol)
+            profile = get_fmp_profile(symbol)
+            ratios = get_fmp_ratios(symbol)
+            intrinsic = dcf_valuation(symbol)
 
-        st.subheader(f"Price History — {symbol}")
-        st.line_chart(price_df["close"])
+        # Moving averages
+        price_df["MA20"] = price_df["close"].rolling(20).mean()
+        price_df["MA50"] = price_df["close"].rolling(50).mean()
+        price_df["MA200"] = price_df["close"].rolling(200).mean()
 
+        # Merge overlays
+        chart_df = price_df.copy()
+
+        if overlay == "Moving Averages":
+            st.subheader("Price with Moving Averages")
+            st.line_chart(chart_df[["close", "MA20", "MA50", "MA200"]])
+
+        elif overlay == "Bollinger Bands":
+            if not bb_df.empty:
+                chart_df = chart_df.join(bb_df[["upper", "middle", "lower"]], how="left")
+                st.subheader("Price with Bollinger Bands")
+                st.line_chart(chart_df[["close", "upper", "middle", "lower"]])
+            else:
+                st.subheader("Price (no Bollinger data)")
+                st.line_chart(chart_df["close"])
+
+        elif overlay == "MACD":
+            st.subheader("Price (MACD shown below)")
+            st.line_chart(chart_df["close"])
+            if not macd_df.empty:
+                st.subheader("MACD")
+                st.line_chart(macd_df[["macd", "signal", "hist"]])
+            else:
+                st.write("No MACD data.")
+
+        # Trend
         trend = trend_from_ma(price_df)
         st.write(f"**Trend:** {trend}")
 
-        rsi_df = parse_indicator_series(rsi_json, "Technical Analysis: RSI")
-        macd_df = parse_indicator_series(macd_json, "Technical Analysis: MACD")
-        bb_df = parse_indicator_series(bb_json, "Technical Analysis: BBANDS")
-
+        # Indicators summary
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.subheader("RSI")
             if not rsi_df.empty:
-                st.write(f"Latest RSI: {rsi_df.iloc[-1]['RSI']:.2f}")
+                latest_rsi = rsi_df.iloc[-1]["rsi"]
+                st.write(f"Latest RSI: {latest_rsi:.2f}")
             else:
-                st.write("No RSI data")
+                st.write("No RSI data.")
 
         with col2:
-            st.subheader("MACD")
+            st.subheader("MACD (latest)")
             if not macd_df.empty:
                 latest = macd_df.iloc[-1]
-                st.write(f"MACD: {latest['MACD']:.4f}")
-                st.write(f"Signal: {latest['MACD_Signal']:.4f}")
-                st.write(f"Hist: {latest['MACD_Hist']:.4f}")
+                st.write(f"MACD: {latest['macd']:.4f}")
+                st.write(f"Signal: {latest['signal']:.4f}")
+                st.write(f"Hist: {latest['hist']:.4f}")
             else:
-                st.write("No MACD data")
+                st.write("No MACD data.")
 
         with col3:
-            st.subheader("Bollinger Bands")
+            st.subheader("Bollinger Bands (latest)")
             if not bb_df.empty:
                 latest = bb_df.iloc[-1]
-                st.write(f"Upper: {latest['Real Upper Band']:.2f}")
-                st.write(f"Middle: {latest['Real Middle Band']:.2f}")
-                st.write(f"Lower: {latest['Real Lower Band']:.2f}")
+                st.write(f"Upper: {latest['upper']:.2f}")
+                st.write(f"Middle: {latest['middle']:.2f}")
+                st.write(f"Lower: {latest['lower']:.2f}")
             else:
-                st.write("No Bollinger data")
+                st.write("No Bollinger data.")
 
-        st.subheader("Fundamentals")
-        if overview:
-            st.write(f"**Market Cap:** {overview.get('MarketCapitalization')}")
-            st.write(f"**Sector:** {overview.get('Sector')}")
-            st.write(f"**Price-to-Sales (TTM):** {overview.get('PriceToSalesRatioTTM')}")
+        # Fundamentals
+        st.subheader("Fundamentals (FMP)")
+        if profile:
+            st.write(f"**Company:** {profile.get('companyName')}")
+            st.write(f"**Sector:** {profile.get('sector')}")
+            st.write(f"**Country:** {profile.get('country')}")
+            st.write(f"**Market Cap:** {profile.get('marketCap')}")
         else:
-            st.write("No overview data.")
+            st.write("No profile data.")
 
-    except Exception as e:
-        st.error(f"Error: {e}")
+        if ratios:
+            st.write(f"**Price-to-Sales (TTM):** {ratios.get('priceToSalesTTM')}")
+
+        # DCF valuation
+        st.subheader("Intrinsic Value (Simple DCF)")
+        if intrinsic is not None:
+            current_price = profile.get("price")
+            st.write(f"**Intrinsic value per share:** {intrinsic:.2f}")
+            if current_price:
+                try:
+                    cp = float(current_price)
+                    diff = intrinsic - cp
