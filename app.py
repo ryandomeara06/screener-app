@@ -244,7 +244,14 @@ def fetch_price_history(ticker: str, years: int = 5) -> pd.DataFrame:
 def fetch_fundamentals(ticker: str, last_price: float) -> dict:
     """
     MOCK fundamentals generator. Replace with a real API call
-    returning at least: marketCap, totalRevenue, sector, name.
+    returning at least: marketCap, totalRevenue, sector, name,
+    freeCashFlow, fcfGrowthRate, sharesOutstanding, and a discount
+    rate / cash & debt if you want a more complete DCF.
+
+    A real provider (Financial Modeling Prep, for example) exposes
+    trailing free cash flow directly via its cash-flow-statement
+    endpoint, plus analyst growth estimates you can use in place of
+    the mocked growth rate below.
     """
     seed = abs(hash(ticker + "fund")) % (2**32)
     rng = np.random.default_rng(seed)
@@ -254,12 +261,26 @@ def fetch_fundamentals(ticker: str, last_price: float) -> dict:
     revenue = market_cap / rng.uniform(1.5, 12)  # implies a P/S range
     sectors = ["Technology", "Healthcare", "Financials", "Energy",
                "Consumer Discretionary", "Industrials", "Materials"]
+
+    # --- Mock inputs for the intrinsic value (DCF) model ---
+    fcf_margin = rng.uniform(0.05, 0.25)
+    free_cash_flow = revenue * fcf_margin
+    fcf_growth_rate = rng.uniform(0.03, 0.18)      # near-term annual FCF growth
+    terminal_growth_rate = rng.uniform(0.02, 0.03)  # long-run perpetuity growth
+    discount_rate = rng.uniform(0.08, 0.12)         # discount / required return
+    net_cash = market_cap * rng.uniform(-0.05, 0.15)  # cash minus debt, rough
+
     return {
         "name": f"{ticker} Corp.",
         "sector": sectors[int(seed) % len(sectors)],
         "marketCap": market_cap,
         "totalRevenue": revenue,
         "sharesOutstanding": shares_out,
+        "freeCashFlow": free_cash_flow,
+        "fcfGrowthRate": fcf_growth_rate,
+        "terminalGrowthRate": terminal_growth_rate,
+        "discountRate": discount_rate,
+        "netCash": net_cash,
     }
 
 
@@ -327,6 +348,87 @@ def compute_price_to_sales(market_cap, revenue):
     if not market_cap or not revenue or revenue == 0:
         return None
     return market_cap / revenue
+
+
+def compute_intrinsic_value(fundamentals: dict, projection_years: int = 5) -> dict:
+    """
+    Simplified Discounted Cash Flow (DCF) model.
+
+    Projects free cash flow forward at a near-term growth rate, discounts
+    each year back to present value at the discount rate, adds a terminal
+    value (Gordon Growth perpetuity) beyond the projection window, then
+    adds net cash and divides by shares outstanding to get an intrinsic
+    fair value per share.
+
+    This is a standard simplified DCF for a dashboard signal -- real
+    equity research layers in more nuance (multi-stage growth, WACC
+    built from capital structure, margin normalization, etc.). Treat
+    the output as a directional estimate, not a precise valuation.
+    """
+    fcf = fundamentals.get("freeCashFlow")
+    growth = fundamentals.get("fcfGrowthRate")
+    terminal_growth = fundamentals.get("terminalGrowthRate")
+    discount_rate = fundamentals.get("discountRate")
+    shares_out = fundamentals.get("sharesOutstanding")
+    net_cash = fundamentals.get("netCash", 0)
+
+    if not fcf or not shares_out or discount_rate is None or discount_rate <= terminal_growth:
+        return {"fair_value": None, "reasons": ["Insufficient data to run a DCF."]}
+
+    pv_sum = 0.0
+    projected_fcf = fcf
+    for year in range(1, projection_years + 1):
+        projected_fcf = projected_fcf * (1 + growth)
+        pv_sum += projected_fcf / ((1 + discount_rate) ** year)
+
+    terminal_value = (projected_fcf * (1 + terminal_growth)) / (discount_rate - terminal_growth)
+    pv_terminal = terminal_value / ((1 + discount_rate) ** projection_years)
+
+    enterprise_value = pv_sum + pv_terminal
+    equity_value = enterprise_value + net_cash
+    fair_value_per_share = equity_value / shares_out
+
+    return {
+        "fair_value": fair_value_per_share,
+        "enterprise_value": enterprise_value,
+        "equity_value": equity_value,
+        "pv_explicit": pv_sum,
+        "pv_terminal": pv_terminal,
+        "assumptions": {
+            "fcf_growth": growth,
+            "terminal_growth": terminal_growth,
+            "discount_rate": discount_rate,
+            "years": projection_years,
+        },
+    }
+
+
+def assess_valuation(current_price: float, fair_value: float, margin_threshold: float = 0.15) -> dict:
+    """
+    Compares current price to DCF fair value and classifies as
+    UNDERVALUED / OVERVALUED / FAIRLY VALUED based on the percentage
+    gap, using a configurable margin-of-safety threshold (default 15%).
+    """
+    if fair_value is None or fair_value <= 0:
+        return {
+            "label": "N/A", "css_class": "neutral",
+            "gap_pct": None,
+            "reasons": ["Intrinsic value could not be computed from available data."],
+        }
+
+    gap_pct = (current_price - fair_value) / fair_value * 100
+
+    if gap_pct <= -margin_threshold * 100:
+        label, css_class = "UNDERVALUED", "pos"
+        reason = f"Trading {abs(gap_pct):.1f}% below estimated intrinsic value of ${fair_value:.2f}."
+    elif gap_pct >= margin_threshold * 100:
+        label, css_class = "OVERVALUED", "neg"
+        reason = f"Trading {gap_pct:.1f}% above estimated intrinsic value of ${fair_value:.2f}."
+    else:
+        label, css_class = "FAIRLY VALUED", "neutral"
+        reason = f"Trading within {abs(gap_pct):.1f}% of estimated intrinsic value of ${fair_value:.2f}."
+
+    return {"label": label, "css_class": css_class, "gap_pct": gap_pct, "reasons": [reason]}
 
 
 def fmt_money(x):
@@ -406,6 +508,9 @@ fundamentals = fetch_fundamentals(ticker_input, current_price)
 ps_ratio = compute_price_to_sales(fundamentals["marketCap"], fundamentals["totalRevenue"])
 rsi_now = df_full["RSI"].iloc[-1]
 
+dcf = compute_intrinsic_value(fundamentals)
+valuation = assess_valuation(current_price, dcf.get("fair_value"))
+
 n_days = RANGE_DAYS[range_choice]
 df = df_full.tail(n_days).copy()
 
@@ -425,7 +530,7 @@ else:
 # ==========================================================
 # TOP METRIC ROW
 # ==========================================================
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4, c5, c6 = st.columns(6)
 
 with c1:
     st.markdown(f"""
@@ -466,6 +571,17 @@ with c5:
         <div class="label">Price / Sales</div>
         <div class="value">{ps_display}</div>
         <div class="sub mono" style="color:var(--text-secondary)">Rev {fmt_money(fundamentals['totalRevenue'])}</div>
+    </div>""", unsafe_allow_html=True)
+
+with c6:
+    fair_value = dcf.get("fair_value")
+    fv_display = f"${fair_value:,.2f}" if fair_value else "N/A"
+    gap_display = f"{valuation['gap_pct']:+.1f}% vs price" if valuation.get("gap_pct") is not None else "—"
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">Intrinsic Value (DCF)</div>
+        <div class="value"><span class="badge badge-{valuation['css_class'] if valuation['css_class'] != 'neutral' else 'mixed'}">{valuation['label']}</span></div>
+        <div class="sub mono" style="color:var(--text-secondary)">Fair value {fv_display} · {gap_display}</div>
     </div>""", unsafe_allow_html=True)
 
 
@@ -545,6 +661,45 @@ else:  # Moving Averages
     fig.update_layout(**PLOTLY_LAYOUT, height=560)
 
 st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+# ==========================================================
+# INTRINSIC VALUE -- DCF BREAKDOWN
+# ==========================================================
+st.markdown('<div class="section-label">INTRINSIC VALUE — DCF BREAKDOWN</div>', unsafe_allow_html=True)
+
+dcf_col, reason_col = st.columns([1, 2])
+
+with dcf_col:
+    if dcf.get("fair_value"):
+        a = dcf["assumptions"]
+        dcf_table = pd.DataFrame({
+            "Assumption": ["FCF Growth (near-term)", "Terminal Growth", "Discount Rate", "Projection Years"],
+            "Value": [f"{a['fcf_growth']*100:.1f}%", f"{a['terminal_growth']*100:.1f}%",
+                      f"{a['discount_rate']*100:.1f}%", f"{a['years']}"],
+        })
+        st.dataframe(dcf_table, hide_index=True, use_container_width=True, height=180)
+        st.markdown(f"""
+        <div class="metric-card" style="margin-top:8px;">
+            <div class="label">Fair Value / Share</div>
+            <div class="value">${dcf['fair_value']:,.2f}</div>
+            <div class="sub mono" style="color:var(--text-secondary)">Current: ${current_price:,.2f}</div>
+        </div>""", unsafe_allow_html=True)
+    else:
+        st.info("DCF could not be computed — insufficient fundamental data.")
+
+with reason_col:
+    verdict_class = valuation["css_class"]
+    st.markdown(f"""
+    <div class="metric-card">
+        <div class="label">Valuation Verdict</div>
+        <div class="value"><span class="badge badge-{verdict_class if verdict_class != 'neutral' else 'mixed'}">{valuation['label']}</span></div>
+    </div>
+    """, unsafe_allow_html=True)
+    st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+    for reason in valuation["reasons"]:
+        st.markdown(f"<div class='mono' style='color:var(--text-secondary); font-size:13px; margin-bottom:6px;'>• {reason}</div>", unsafe_allow_html=True)
+    st.caption("Simplified DCF for directional signal only — not a substitute for full equity research or professional financial advice.")
 
 
 # ==========================================================
