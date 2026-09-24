@@ -291,3 +291,16 @@ if st.button("Analyze"):
             st.write(f"**Intrinsic value per share:** {intrinsic:.2f}")
             if current_price:
                 try:
+                    cp = float(current_price)
+                    diff = intrinsic - cp
+                    if diff > 0:
+                        st.write(f"Stock appears **undervalued** by {diff:.2f} per share.")
+                    else:
+                        st.write(f"Stock appears **overvalued** by {abs(diff):.2f} per share.")
+                except:
+                    st.write("Unable to compare intrinsic value to current price.")
+        else:
+            st.write("Not enough data to compute DCF intrinsic value.")
+
+    except Exception as e:
+        st.error(f"Error: {e}")
