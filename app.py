@@ -291,4 +291,3 @@ if st.button("Analyze"):
             st.write(f"**Intrinsic value per share:** {intrinsic:.2f}")
             if current_price:
                 try:
-                    cp = float(current_price)
